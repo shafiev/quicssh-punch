@@ -111,8 +111,8 @@ jobs:
       - name: Fix layout
         run: |
           mkdir -p dist/amd64 dist/arm64
-          mv dist/quicssh-punch-openwrt-x86_64/* dist/amd64/
-          mv dist/quicssh-punch-openwrt-aarch64/* dist/arm64/
+          mv dist/quicssh-punch-openwrt-x86_64/quicssh-punch-openwrt-x86_64 dist/amd64/quicssh-punch
+          mv dist/quicssh-punch-openwrt-aarch64/quicssh-punch-openwrt-aarch64 dist/arm64/quicssh-punch
           rm -rf dist/quicssh-punch-openwrt-*
 
       - uses: docker/setup-buildx-action@v3
