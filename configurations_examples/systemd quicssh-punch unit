@@ -1,0 +1,14 @@
+[Unit]
+Description=quicssh UDP hole-punch relay (ntfy rendezvous)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=n
+ExecStart=/usr/local/bin/quicssh-punch -port 44433 -role B -topic punch-fXXXXX
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
