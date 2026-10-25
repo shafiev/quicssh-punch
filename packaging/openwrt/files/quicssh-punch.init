@@ -1,0 +1,44 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=96
+
+start_instance() {
+	local section="$1"
+	local enabled port role topic target peer stun
+
+	config_get_bool enabled "$section" enabled 0
+	[ "$enabled" = 1 ] || return 0
+
+	config_get port "$section" port 44433
+	config_get role "$section" role A
+	config_get topic "$section" topic
+	config_get target "$section" target
+	config_get peer "$section" peer
+	config_get stun "$section" stun
+
+	[ -n "$topic" ] || [ -n "$peer" ] || {
+		logger -t quicssh-punch "section $section: no topic or peer, not starting"
+		return 0
+	}
+
+	procd_open_instance "$section"
+	procd_set_param command /usr/bin/quicssh-punch -port "$port" -role "$role"
+	[ -n "$topic" ] && procd_append_param command -topic "$topic"
+	[ -n "$target" ] && procd_append_param command -target "$target"
+	[ -n "$peer" ] && procd_append_param command -peer "$peer"
+	[ -n "$stun" ] && procd_append_param command -stun "$stun"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	config_load quicssh-punch
+	config_foreach start_instance quicssh-punch
+}
+
+service_triggers() {
+	procd_add_reload_trigger quicssh-punch
+}
