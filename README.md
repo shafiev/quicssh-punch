@@ -22,3 +22,14 @@ and then connect to it via a standart ssh
 ```
 ssh openwrt-punch
 ```
+
+## Container image
+
+Published to GitHub Packages as `ghcr.io/shafiev/quicssh-punch` (linux/amd64, linux/arm64):
+
+```sh
+docker run -d --network host ghcr.io/shafiev/quicssh-punch:latest \
+  -port 44433 -role B -topic punch-fXXXXXXXXXXXXXXXXXX
+```
+
+Use `--network host` on Linux: the punch must use the host's NAT mapping.
