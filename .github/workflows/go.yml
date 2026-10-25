@@ -1,0 +1,68 @@
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # OpenWrt package arches (https://openwrt.org/docs/guide-developer/toolchain/use-buildsystem#package_architecture)
+          - { name: openwrt-x86_64,        goos: linux,   goarch: amd64 }
+          - { name: openwrt-aarch64,       goos: linux,   goarch: arm64 }   # MX4300, RPi 3/4/5, most modern routers
+          - { name: openwrt-armv7,         goos: linux,   goarch: arm,   goarm: "7" }   # arm_cortex-a9/a7
+          - { name: openwrt-mipsel-24kc,   goos: linux,   goarch: mipsle, gomips: softfloat }
+          - { name: openwrt-mips-24kc,     goos: linux,   goarch: mips,   gomips: softfloat }
+          - { name: openwrt-i386-pentium4, goos: linux,   goarch: "386" }
+          - { name: openwrt-riscv64,       goos: linux,   goarch: riscv64 }
+          # Desktop
+          - { name: macos-arm64,           goos: darwin,  goarch: arm64 }
+          - { name: macos-amd64,           goos: darwin,  goarch: amd64 }
+          - { name: windows-amd64,         goos: windows, goarch: amd64, ext: ".exe" }
+          - { name: windows-arm64,         goos: windows, goarch: arm64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: "0"
+        run: go build -v -trimpath -ldflags "-s -w" -o "dist/quicssh-punch-${{ matrix.name }}${{ matrix.ext }}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quicssh-punch-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
