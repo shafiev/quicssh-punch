@@ -153,13 +153,11 @@ func punchLoop(conn *net.UDPConn, peer *atomic.Value) {
 		}
 		// A known peer with no packets back for minutes means the tunnel is
 		// never going to form on its own (NAT/hairpin blocking, peer down).
-		silent := time.Since(peerSince)
-		if lp := lastPeerProbe.Load(); lp > 0 {
-			silent = time.Since(time.Unix(0, lp))
-		}
-		if silent > 2*time.Minute && time.Since(lastWarn) > 5*time.Minute {
+		now := time.Now()
+		silent := peerSilence(peerSince, lastPeerProbe.Load(), now)
+		if punchShouldWarn(silent, lastWarn, now) {
 			log.Printf("no packets from peer %s for %v — peer is down or its NAT is dropping our probes", p, silent.Round(time.Minute))
-			lastWarn = time.Now()
+			lastWarn = now
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -204,25 +202,17 @@ func rendezvousLoop(self, peer *atomic.Value) {
 		} else {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-			for i := len(lines) - 1; i >= 0; i-- {
-				f := strings.Fields(lines[i])
-				if len(f) == 2 && f[0] != *role {
-					if _, err := net.ResolveUDPAddr("udp", f[1]); err == nil {
-						if cur, _ := peer.Load().(string); cur != f[1] {
-							log.Printf("peer endpoint %s", f[1])
-						}
-						peer.Store(f[1])
-					}
-					break
+			if ep := peerFromLines(string(body), *role); ep != "" {
+				if cur, _ := peer.Load().(string); cur != ep {
+					log.Printf("peer endpoint %s", ep)
 				}
+				peer.Store(ep)
 			}
 		}
 
 		s, _ := self.Load().(string)
 		if s != "" {
-			needPost := s != lastSelf || time.Since(lastPost) >= heartbeat
-			if needPost {
+			if needPost(s, lastSelf, lastPost, time.Now(), heartbeat) {
 				resp, err := hc.Post(url, "text/plain", strings.NewReader(*role+" "+s))
 				if err != nil {
 					log.Printf("rv post: %v", err)
@@ -254,7 +244,7 @@ func rendezvousLoop(self, peer *atomic.Value) {
 				firstFail = time.Now()
 			}
 			failures++
-			if failures == 3 || failures%30 == 0 {
+			if failureShouldWarn(failures) {
 				log.Printf("rendezvous failing for %v (%d consecutive cycles)", time.Since(firstFail).Round(time.Second), failures)
 			}
 		}
@@ -264,6 +254,41 @@ func rendezvousLoop(self, peer *atomic.Value) {
 
 func isLocal(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// peerFromLines extracts the latest valid peer endpoint published by a role
+// other than self from an ntfy raw body.
+func peerFromLines(body, role string) string {
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		f := strings.Fields(lines[i])
+		if len(f) == 2 && f[0] != role {
+			if _, err := net.ResolveUDPAddr("udp", f[1]); err == nil {
+				return f[1]
+			}
+		}
+	}
+	return ""
+}
+
+func needPost(self, lastSelf string, lastPost, now time.Time, heartbeat time.Duration) bool {
+	return self != "" && (self != lastSelf || now.Sub(lastPost) >= heartbeat)
+}
+
+func failureShouldWarn(failures int) bool {
+	return failures == 3 || (failures > 0 && failures%30 == 0)
+}
+
+func peerSilence(peerSince time.Time, lastProbe int64, now time.Time) time.Duration {
+	silent := now.Sub(peerSince)
+	if lastProbe > 0 {
+		silent = now.Sub(time.Unix(0, lastProbe))
+	}
+	return silent
+}
+
+func punchShouldWarn(silent time.Duration, lastWarn, now time.Time) bool {
+	return silent > 2*time.Minute && now.Sub(lastWarn) > 5*time.Minute
 }
 
 func isSTUN(b []byte) bool {
