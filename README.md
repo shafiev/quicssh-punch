@@ -1,5 +1,5 @@
 # quicssh-punch
-The software to make a udp punch hole to connect to device via quicshh if you don't have a Public IPv4 address
+The software to make a udp punch hole to connect to device via QuicSSH  if you don't have a Public IPv4 address
 
 Builted on go only on go std libs with any deps and used the free ntfy.sh
 
