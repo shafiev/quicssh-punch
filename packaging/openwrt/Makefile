@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=quicssh-punch
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.0.2
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/shafiev/quicssh-punch/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=955412c990657070d8cf81db2a5ae40d335b4131db343780f6b49fee3eafd566
+PKG_HASH:=3b4126634b83c99f013f4b5abcaa9dba2e6f21b62032747977d605bf4f9376dc
 
 PKG_MAINTAINER:=Nail Shafiev <n.shafiev@small.kz>
 PKG_LICENSE:=AGPL-3.0-only

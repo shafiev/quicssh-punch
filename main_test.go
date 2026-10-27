@@ -78,18 +78,18 @@ func TestIsLocal(t *testing.T) {
 
 func TestPeerFromLines(t *testing.T) {
 	body := "A 1.1.1.1:1000\nB 2.2.2.2:2000\nA 3.3.3.3:3000\n"
-	if got := peerFromLines(body, "A"); got != "2.2.2.2:2000" {
+	if got := peerFromLines(body, "A", ""); got != "2.2.2.2:2000" {
 		t.Fatalf("got %q", got)
 	}
-	if got := peerFromLines("A 1.1.1.1:1000\n", "A"); got != "" {
+	if got := peerFromLines("A 1.1.1.1:1000\n", "A", ""); got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
-	if got := peerFromLines("A not-an-addr\nB 4.4.4.4:4000\n", "A"); got != "4.4.4.4:4000" {
+	if got := peerFromLines("A not-an-addr\nB 4.4.4.4:4000\n", "A", ""); got != "4.4.4.4:4000" {
 		t.Fatalf("got %q", got)
 	}
 	// latest valid entry for a peer role wins
 	body2 := "B 5.5.5.5:5000\nB 6.6.6.6:6000\n"
-	if got := peerFromLines(body2, "A"); got != "6.6.6.6:6000" {
+	if got := peerFromLines(body2, "A", ""); got != "6.6.6.6:6000" {
 		t.Fatalf("got %q", got)
 	}
 }
