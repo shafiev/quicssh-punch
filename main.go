@@ -63,6 +63,11 @@ var (
 	pendingProbe   atomic.Int64
 	peerTableMu    sync.Mutex
 	peerTable      = map[string]string{}
+	peerSetMu      sync.Mutex
+	peerSet        = map[string]time.Time{}
+	peerLastSeen   = map[string]int64{}
+	peerLastWarnMu sync.Mutex
+	peerLastWarn   = map[string]time.Time{}
 	metricPeerPkts atomic.Int64
 	metricToPeer   atomic.Int64
 	metricLastRTT  atomic.Int64 // microseconds
@@ -89,6 +94,7 @@ func main() {
 	var self, peer, clientAddr atomic.Value
 	if *peerStatic != "" {
 		peer.Store(*peerStatic)
+		addPeer(*peerStatic)
 	}
 
 	var targetAddr *net.UDPAddr
@@ -155,19 +161,38 @@ func main() {
 			}
 			continue
 		}
-		if isLocal(src.IP) {
-			// local quicssh side (client or server)
-			clientAddr.Store(src.String())
-			metricToPeer.Add(1)
-			if p, _ := peer.Load().(string); p != "" {
+		if targetAddr != nil && src.String() == targetAddr.String() {
+			// reply from local target: broadcast to all peers (multi-peer)
+			for _, p := range peerList() {
 				if a, err := net.ResolveUDPAddr("udp", p); err == nil {
 					conn.WriteToUDP(pkt, a)
 				}
 			}
 			continue
 		}
-		// external: the peer (single-peer relay)
+		if isLocal(src.IP) {
+			// local quicssh side (client or server)
+			clientAddr.Store(src.String())
+			metricToPeer.Add(1)
+			peers := peerList()
+			if len(peers) == 0 {
+				if p, _ := peer.Load().(string); p != "" {
+					if a, err := net.ResolveUDPAddr("udp", p); err == nil {
+						conn.WriteToUDP(pkt, a)
+					}
+				}
+			} else {
+				// client mode: send to the last known peer
+				p := peers[len(peers)-1]
+				if a, err := net.ResolveUDPAddr("udp", p); err == nil {
+					conn.WriteToUDP(pkt, a)
+				}
+			}
+			continue
+		}
+		// external: a peer (multi-peer capable)
 		peer.Store(src.String())
+		addPeer(src.String())
 		lastPeerProbe.Store(time.Now().UnixNano())
 		metricPeerPkts.Add(1)
 		if targetAddr != nil {
@@ -258,46 +283,75 @@ func detectNAT(self *atomic.Value) {
 }
 
 func punchLoop(conn *net.UDPConn, peer *atomic.Value) {
-	var seenPeer string
-	var peerSince, lastWarn, lastProbe time.Time
+	var lastProbe time.Time
 	for {
-		p, _ := peer.Load().(string)
-		if p == "" {
+		peers := peerList()
+		if len(peers) == 0 {
+			if p, _ := peer.Load().(string); p != "" {
+				peers = []string{p}
+			}
+		}
+		if len(peers) == 0 {
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		if p != seenPeer {
-			seenPeer, peerSince = p, time.Now()
-		}
-		if a, err := net.ResolveUDPAddr("udp", p); err == nil {
-			conn.WriteToUDP([]byte(punchMagic), a)
-		}
 		now := time.Now()
-		// periodic latency probe
-		if now.Sub(lastProbe) >= 30*time.Second {
+		for _, p := range peers {
 			if a, err := net.ResolveUDPAddr("udp", p); err == nil {
-				ts := now.UnixNano()
-				buf := make([]byte, 12)
-				copy(buf[:4], probeReqMagic)
-				binary.BigEndian.PutUint64(buf[4:], uint64(ts))
-				if _, err := conn.WriteToUDP(buf, a); err == nil {
-					pendingProbe.Store(ts)
-					lastProbe = now
-				}
+				conn.WriteToUDP([]byte(punchMagic), a)
 			}
 		}
-		// A known peer with no packets back for minutes means the tunnel is
-		// never going to form on its own (NAT/hairpin blocking, peer down).
-		// relay fallback
-		silent := peerSilence(peerSince, lastPeerProbe.Load(), now)
-		if *relay != "" && !usingRelay.Load() && silent > 2*time.Minute {
-			log.Printf("direct punch stalled; falling back to relay %s", *relay)
-			peer.Store(*relay)
-			usingRelay.Store(true)
+		// periodic latency probe (all peers)
+		if now.Sub(lastProbe) >= 30*time.Second {
+			for _, p := range peers {
+				if a, err := net.ResolveUDPAddr("udp", p); err == nil {
+					ts := now.UnixNano()
+					buf := make([]byte, 12)
+					copy(buf[:4], probeReqMagic)
+					binary.BigEndian.PutUint64(buf[4:], uint64(ts))
+					if _, err := conn.WriteToUDP(buf, a); err == nil {
+						pendingProbe.Store(ts)
+					}
+				}
+			}
+			lastProbe = now
 		}
-		if punchShouldWarn(silent, lastWarn, now) {
-			log.Printf("no packets from peer %s for %v — peer is down or its NAT is dropping our probes", p, silent.Round(time.Minute))
-			lastWarn = now
+		// relay fallback (global)
+		if *relay != "" && !usingRelay.Load() {
+			stalled := false
+			for _, p := range peers {
+				peerSetMu.Lock()
+				last := peerLastSeen[p]
+				peerSetMu.Unlock()
+				if last == 0 || now.Sub(time.Unix(0, last)) > 2*time.Minute {
+					stalled = true
+					break
+				}
+			}
+			if stalled {
+				log.Printf("direct punch stalled; falling back to relay %s", *relay)
+				addPeer(*relay)
+				usingRelay.Store(true)
+			}
+		}
+		// per-peer liveness warning
+		for _, p := range peers {
+			peerSetMu.Lock()
+			last := peerLastSeen[p]
+			lastW := peerLastWarn[p]
+			peerSetMu.Unlock()
+			var silent time.Duration
+			if last == 0 {
+				silent = 2 * time.Minute
+			} else {
+				silent = now.Sub(time.Unix(0, last))
+			}
+			if silent > 2*time.Minute && now.Sub(lastW) > 5*time.Minute {
+				log.Printf("no packets from peer %s for %v — peer is down or its NAT is dropping our probes", p, silent.Round(time.Minute))
+				peerSetMu.Lock()
+				peerLastWarn[p] = now
+				peerSetMu.Unlock()
+			}
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -348,6 +402,7 @@ func rendezvousLoop(self, peer *atomic.Value) {
 					log.Printf("peer endpoint %s", ep)
 				}
 				peer.Store(ep)
+				addPeer(ep)
 			}
 		}
 
@@ -411,7 +466,7 @@ func startMetrics(addr string) {
 			"packets_to_peer":     metricToPeer.Load(),
 			"last_peer_packet":    lastPeerProbe.Load(),
 			"last_rtt_us":         metricLastRTT.Load(),
-			"peer_count":          len(peerTableSnapshot()),
+			"peer_count":          len(peerList()),
 			"rendezvous_failures": metricRVFail.Load(),
 		}
 		_ = json.NewEncoder(w).Encode(snap)
@@ -449,7 +504,43 @@ func updatePeerTable(body, role, secret string) {
 			}
 		}
 		peerTable[f[0]] = f[1]
+		addPeer(f[1])
 	}
+}
+
+func addPeer(ep string) {
+	if ep == "" {
+		return
+	}
+	if _, err := net.ResolveUDPAddr("udp", ep); err != nil {
+		return
+	}
+	peerSetMu.Lock()
+	peerSet[ep] = time.Now()
+	peerLastSeen[ep] = time.Now().UnixNano()
+	peerSetMu.Unlock()
+}
+
+func peerList() []string {
+	peerSetMu.Lock()
+	defer peerSetMu.Unlock()
+	out := make([]string, 0, len(peerSet))
+	for ep := range peerSet {
+		out = append(out, ep)
+	}
+	return out
+}
+
+func touchPeer(ep string) {
+	if ep == "" {
+		return
+	}
+	peerSetMu.Lock()
+	if _, ok := peerSet[ep]; ok {
+		peerSet[ep] = time.Now()
+		peerLastSeen[ep] = time.Now().UnixNano()
+	}
+	peerSetMu.Unlock()
 }
 
 func signMessage(secret, role, ep string) string {
