@@ -45,6 +45,8 @@ var punchMagic = "PUN0"
 const probeReqMagic = "PNG0"
 const probeRespMagic = "PON0"
 
+// lastPeerProbe is set whenever any packet is received from the peer, so
+// punchLoop can tell "punch forming" apart from "punch silently blocked".
 var lastPeerProbe atomic.Int64
 
 type endpoint struct {
@@ -284,6 +286,8 @@ func punchLoop(conn *net.UDPConn, peer *atomic.Value) {
 				}
 			}
 		}
+		// A known peer with no packets back for minutes means the tunnel is
+		// never going to form on its own (NAT/hairpin blocking, peer down).
 		// relay fallback
 		silent := peerSilence(peerSince, lastPeerProbe.Load(), now)
 		if *relay != "" && !usingRelay.Load() && silent > 2*time.Minute {
@@ -314,6 +318,11 @@ func rendezvousLoop(self, peer *atomic.Value) {
 	var lastPost time.Time
 	var lastSelf string
 	const heartbeat = 1 * time.Hour
+	// ntfy.sh free tier: 250 messages/day/visitor (IP) and 1 req/5s after a
+	// 60 burst. Posting every 10s burns the daily cap in ~40 min, which is
+	// what silenced rendezvous in the first place. Publish only on change or a
+	// slow heartbeat, and pull cached messages (12h) so a peer that is
+	// currently rate-limited still learns the last published endpoint.
 	for {
 		good := true
 		resp, err := hc.Get(url + "/raw?poll=1&since=12h")
@@ -456,6 +465,8 @@ func validSig(secret, role, ep, sig string) bool {
 	return hmac.Equal([]byte(signMessage(secret, role, ep)), []byte(sig))
 }
 
+// peerFromLines extracts the latest valid peer endpoint published by a role
+// other than self from an ntfy raw body.
 func peerFromLines(body, role, secret string) string {
 	lines := strings.Split(strings.TrimSpace(body), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
