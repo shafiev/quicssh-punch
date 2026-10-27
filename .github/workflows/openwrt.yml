@@ -75,3 +75,20 @@ jobs:
           name: openwrt-packages
           path: /tmp/openwrt-sdk/sdk/bin/packages/**/*.apk
           if-no-files-found: error
+
+      - name: Attach packages to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for GitHub release to be created..."
+            sleep 10
+          done
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          find /tmp/openwrt-sdk/sdk/bin/packages -type f -name '*.apk' -print0 | xargs -0 \
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber
