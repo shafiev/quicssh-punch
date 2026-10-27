@@ -4,10 +4,14 @@ Everything the package needs is in this directory:
 
 ```
 packaging/openwrt/
-├── Makefile                      # package recipe (downloads the v1.0.0 tag, builds with Go)
-└── files/
-    ├── quicssh-punch.init        # procd service, reads /etc/config/quicssh-punch
-    └── quicssh-punch.config      # UCI config (disabled by default)
+├── Makefile                      # package recipe (downloads the tag, builds with Go)
+├── files/
+│   ├── quicssh-punch.init        # procd service, reads /etc/config/quicssh-punch
+│   └── quicssh-punch.config      # UCI config (disabled by default)
+└── luci-app-quicssh-punch/       # optional LuCI web interface
+    ├── Makefile
+    ├── luasrc/controller/quicssh_punch.lua
+    └── luasrc/model/cbi/quicssh_punch.lua
 ```
 
 ## Where to put it

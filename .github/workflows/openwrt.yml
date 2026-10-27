@@ -1,0 +1,77 @@
+name: OpenWrt Packages
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-openwrt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk unzip file python3 perl \
+            zstd xz-utils bzip2 libncurses-dev rsync git wget curl
+
+      - name: Cache OpenWrt SDK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/openwrt-sdk/sdk
+          key: openwrt-sdk-25.12.5-qualcommax-ipq807x
+
+      - name: Download and extract SDK
+        run: |
+          if [ ! -f /tmp/openwrt-sdk/sdk/Makefile ]; then
+            mkdir -p /tmp/openwrt-sdk
+            cd /tmp/openwrt-sdk
+            curl -L -o sdk.tar.zst \
+              https://downloads.openwrt.org/releases/25.12.5/targets/qualcommax/ipq807x/openwrt-sdk-25.12.5-qualcommax-ipq807x_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            tar --zstd -xf sdk.tar.zst
+            mv openwrt-sdk-* sdk
+          fi
+
+      - name: Update feeds
+        working-directory: /tmp/openwrt-sdk/sdk
+        run: ./scripts/feeds update -a && ./scripts/feeds install -a
+
+      - name: Add local packages
+        run: |
+          SDK=/tmp/openwrt-sdk/sdk
+          mkdir -p "$SDK/package/quicssh-punch" "$SDK/package/luci-app-quicssh-punch"
+          cp "$GITHUB_WORKSPACE/packaging/openwrt/Makefile" "$SDK/package/quicssh-punch/"
+          cp -r "$GITHUB_WORKSPACE/packaging/openwrt/files" "$SDK/package/quicssh-punch/"
+          cp -r "$GITHUB_WORKSPACE/packaging/openwrt/luci-app-quicssh-punch/"* "$SDK/package/luci-app-quicssh-punch/"
+
+      - name: Configure packages
+        working-directory: /tmp/openwrt-sdk/sdk
+        run: |
+          make defconfig
+          for pkg in quicssh-punch luci-app-quicssh-punch; do
+            if grep -q "^# CONFIG_PACKAGE_${pkg} is not set" .config; then
+              sed -i "s/^# CONFIG_PACKAGE_${pkg} is not set/CONFIG_PACKAGE_${pkg}=y/" .config
+            elif ! grep -q "^CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+            fi
+          done
+          make oldconfig
+
+      - name: Build quicssh-punch
+        working-directory: /tmp/openwrt-sdk/sdk
+        run: make package/quicssh-punch/compile V=s
+
+      - name: Build luci-app-quicssh-punch
+        working-directory: /tmp/openwrt-sdk/sdk
+        run: make package/luci-app-quicssh-punch/compile V=s
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-packages
+          path: /tmp/openwrt-sdk/sdk/bin/packages/**/*.apk
+          if-no-files-found: error

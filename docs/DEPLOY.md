@@ -206,9 +206,108 @@ quicssh-punch -port 44433 -role A -topic punch-XXXX \
   -target 10.144.1.1:4433 -secret 'shared-secret' -metrics 127.0.0.1:9090
 ```
 
+## 6a. macOS deployment (launchd)
+
+Build for macOS:
+
+```sh
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o quicssh-punch-macos-arm64 .
+# or for Intel Macs:
+GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o quicssh-punch-macos-amd64 .
+```
+
+Install binary:
+
+```sh
+sudo cp quicssh-punch-macos-arm64 /usr/local/bin/quicssh-punch
+sudo chmod 755 /usr/local/bin/quicssh-punch
+```
+
+Create `/Library/LaunchDaemons/com.shafiev.quicssh-punch.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shafiev.quicssh-punch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/quicssh-punch</string>
+        <string>-port</string>
+        <string>44433</string>
+        <string>-role</string>
+        <string>B</string>
+        <string>-topic</string>
+        <string>punch-XXXX</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/quicssh-punch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/quicssh-punch.err</string>
+</dict>
+</plist>
+```
+
+Set permissions and load:
+
+```sh
+sudo chown root:wheel /Library/LaunchDaemons/com.shafiev.quicssh-punch.plist
+sudo chmod 644 /Library/LaunchDaemons/com.shafiev.quicssh-punch.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.shafiev.quicssh-punch.plist
+sudo launchctl kickstart -k system/com.shafiev.quicssh-punch
+```
+
+Server side uses the same plist but with `-role A -target 10.144.1.1:4433`.
+
+## 6b. Windows deployment
+
+Build for Windows:
+
+```powershell
+$env:GOOS="windows"
+$env:GOARCH="amd64"
+go build -trimpath -ldflags "-s -w" -o quicssh-punch.exe .
+```
+
+`quicssh-punch` is a normal foreground program, so on Windows it is easiest to run it as a service with **NSSM** (Non-Sucking Service Manager).
+
+Install NSSM (example with Chocolatey):
+
+```powershell
+choco install nssm -y
+```
+
+Install and start the service:
+
+```powershell
+nssm install quicssh-punch C:\tools\quicssh-punch.exe
+nssm set quicssh-punch AppDirectory C:\tools
+nssm set quicssh-punch DisplayName "quicssh-punch"
+nssm set quicssh-punch Description "quicssh UDP hole-punch relay"
+nssm set quicssh-punch Start SERVICE_AUTO_START
+nssm set quicssh-punch AppParameters "-port 44433 -role B -topic punch-XXXX"
+nssm start quicssh-punch
+```
+
+Server side:
+
+```powershell
+nssm set quicssh-punch AppParameters "-port 44433 -role A -topic punch-XXXX -target 10.144.1.1:4433"
+nssm restart quicssh-punch
+```
+
+Alternative without NSSM: run it in a terminal/PowerShell session, or use Windows Task Scheduler to start it at boot. `sc.exe create` is not recommended for this binary because it is not a native Windows service.
+
 ## 7. Verification
 
-Check service:
+Check service(linux):
 
 ```sh
 systemctl status quicssh-punch
@@ -233,7 +332,65 @@ Metrics (if enabled):
 curl http://127.0.0.1:9090/metrics
 ```
 
-## 8. Troubleshooting
+## 8. Debugging steps
+
+1. Check the process and service state:
+
+```sh
+ps | grep quicssh-punch
+systemctl status quicssh-punch          # Linux
+/etc/init.d/quicssh-punch status       # OpenWrt
+```
+
+2. Read logs:
+
+```sh
+journalctl -u quicssh-punch -f          # Linux
+logread -f | grep quicssh-punch         # OpenWrt
+```
+
+3. Verify the listening UDP port:
+
+```sh
+ss -lun | grep 44433
+netstat -lun | grep 44433
+```
+
+4. Verify STUN endpoint discovery (logs should show `public endpoint ...`).
+
+5. Verify rendezvous traffic:
+
+```sh
+curl -s "https://ntfy.sh/<topic>/raw?poll=1&since=10m"
+```
+
+6. Capture packets on the punch port:
+
+```sh
+tcpdump -ni any udp port 44433
+```
+
+7. Test SSH with verbose output:
+
+```sh
+ssh -vvv openwrt-punch 'echo ok'
+```
+
+8. Check metrics if enabled:
+
+```sh
+curl -s http://127.0.0.1:9090/metrics | jq .
+```
+
+9. Test direct connectivity and NAT type by running both sides with `-metrics` and comparing `last_peer_packet`.
+
+10. For OpenWrt, check UCI config:
+
+```sh
+uci show quicssh-punch
+```
+
+## 9. Troubleshooting
 
 - **No connection after 2 minutes**: NAT may be symmetric; use `-relay` or direct public IP.
 - **429 rate limited**: ntfy.sh rate limit; reduce traffic, keep heartbeat long, avoid restarting too often.
